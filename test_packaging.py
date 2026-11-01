@@ -13,7 +13,7 @@ PLUGIN = ROOT / 'plugins/ssu-lms'
 
 class PackageTests(unittest.TestCase):
     def test_runtime_copies_match(self):
-        for name in ('server.py','learningx.py','lecture.py','login.py','runtime.py','bootstrap.py','launch.cjs','requirements.txt'):
+        for name in ('server.py','learningx.py','lecture.py','login.py','runtime.py','keep_alive.py','bootstrap.py','launch.cjs','requirements.txt'):
             self.assertEqual((ROOT/name).read_bytes(), (PLUGIN/name).read_bytes(), name)
 
     def test_portable_manifest(self):

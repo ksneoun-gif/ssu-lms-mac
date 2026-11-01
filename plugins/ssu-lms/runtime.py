@@ -11,6 +11,8 @@ WORKER_OPTIONS = ({'creationflags': subprocess.CREATE_NO_WINDOW | subprocess.CRE
                   if sys.platform == 'win32' else {'start_new_session': True})
 
 LOGIN_STATUS = APP_DIR / 'login-status.json'
+KEEP_ALIVE_STATUS = APP_DIR / 'keep-alive-status.json'
+KEEP_ALIVE_PID = APP_DIR / 'keep-alive.pid'
 
 
 def login_status(status=None):
@@ -25,6 +27,23 @@ def login_status(status=None):
         return json.loads(LOGIN_STATUS.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return {'status': 'not_started'}
+
+
+def keep_alive_status(status=None, **kwargs):
+    """Track session keep-alive status and metrics."""
+    import json
+    import time
+    if status is not None:
+        data = {'status': status, 'updated_at': time.time()}
+        data.update(kwargs)
+        temporary = KEEP_ALIVE_STATUS.with_suffix('.tmp')
+        temporary.write_text(json.dumps(data), encoding='utf-8')
+        temporary.replace(KEEP_ALIVE_STATUS)
+        return data
+    try:
+        return json.loads(KEEP_ALIVE_STATUS.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {'status': 'idle'}
 
 def browser_channel():
     """Use an installed Chrome or Edge; keep Chrome on other platforms."""

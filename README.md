@@ -95,3 +95,18 @@ A native stdio server showing `auth_status:unsupported` in `codex mcp list --jso
 - On Windows run `powershell.exe -NoProfile -File .\reconnect_windows.ps1` from this repository, then restart Codex. It upgrades the existing marketplace, installs 0.3.2, uses the existing setup helper, and runs live MCP checks. It stops on failure and preserves session/transcript data.
 
 Validation: 9 new material/ASR regressions, 11 existing server checks, 8 LearningX tests, 7 login tests, and Windows process/UTF-8 checks passed. Native Canvas access for a particular school account still requires live verification after installing; this release does not claim that inaccessible school files have become available.
+
+## 0.3.4 세션 자동 유지(Keep-Alive) 및 무인 자동 갱신(Silent Refresh)
+
+- **세션 유휴 만료 방지 (Keep-Alive)**: 서버 실행 중 백그라운드 스레드가 10분마다 학교 LMS API에 가벼운 핑을 보내 세션 수명을 계속 연장합니다. 학교 서버가 내려주는 신규 쿠키도 실시간으로 `session.json`에 반영됩니다.
+- **무인 백그라운드 재로그인 (Silent Auto-Refresh)**: 절전 모드 복귀 등으로 세션이 만료된 경우에도, Chrome 프로필에 저장된 정보를 바탕으로 Headless 브라우저가 백그라운드에서 자동으로 재로그인하여 새 세션을 캡처합니다. 대화형 브라우저 창을 띄워 매번 수동으로 로그인할 필요가 없습니다.
+- **신규 MCP 도구**:
+  - `keep_alive_session`: 즉시 세션 유지 핑을 수행하고 상태를 갱신합니다.
+  - `refresh_session`: 백그라운드 무인 세션 갱신을 수행합니다.
+  - `keep_alive_status_check`: 현재 keep-alive 상태와 마지막 핑 시각을 조회합니다.
+- **macOS 백그라운드 데몬(LaunchAgent) 지원**:
+  ```sh
+  python keep_alive.py --install-agent
+  ```
+  맥이 켜져 있는 동안 백그라운드에서 24시간 세션을 상시 유지합니다.
+

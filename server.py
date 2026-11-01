@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import zipfile
@@ -51,15 +52,53 @@ def save_session(cookies: list[dict], source: str = "browser") -> None:
         temporary.unlink(missing_ok=True)
 
 
-def session() -> requests.Session:
+def try_auto_refresh() -> bool:
+    """Attempt background headless re-authentication."""
+    try:
+        from keep_alive import auto_refresh_session
+        return auto_refresh_session()
+    except Exception:
+        return False
+
+
+def _sync_response_cookies(new_cookies) -> None:
+    """Atomic update of session.json when the LMS server refreshes cookies."""
+    try:
+        if not STATE.exists():
+            return
+        data = json.loads(STATE.read_text(encoding="utf-8"))
+        cookie_dict = {c["name"]: c for c in data.get("cookies", [])}
+        updated = False
+        for cookie in new_cookies:
+            if cookie.domain and cookie.domain.lstrip(".") in COOKIE_DOMAINS:
+                cookie_dict[cookie.name] = {
+                    "name": cookie.name,
+                    "value": cookie.value,
+                    "domain": cookie.domain,
+                    "path": cookie.path,
+                    "expires": cookie.expires if cookie.expires is not None else -1,
+                    "secure": cookie.secure,
+                }
+                updated = True
+        if updated:
+            save_session(list(cookie_dict.values()), source=data.get("source", "browser"))
+    except Exception:
+        pass
+
+
+def session(allow_refresh: bool = True) -> requests.Session:
     if not STATE.exists():
-        raise RuntimeError("LMS �α����� �ʿ��մϴ�. start_login�� ȣ���ϼ���.")
+        if allow_refresh and try_auto_refresh():
+            return session(allow_refresh=False)
+        raise RuntimeError("LMS 로그인이 필요합니다. start_login을 호출하세요.")
     data = json.loads(STATE.read_text(encoding="utf-8"))
     token = next((c for c in data["cookies"] if c["name"] == "xn_api_token"
                   and c["domain"].lstrip(".") == "canvas.ssu.ac.kr"), None)
     expires = token.get("expires", -1) if token else 0
     if not token or (expires > 0 and expires <= time.time()):
-        raise RuntimeError("LMS �α����� ����Ǿ����ϴ�. start_login�� ȣ���ϼ���.")
+        if allow_refresh and try_auto_refresh():
+            return session(allow_refresh=False)
+        raise RuntimeError("LMS 로그인이 만료되었습니다. start_login을 호출하세요.")
     client = requests.Session()
     for cookie in data["cookies"]:
         if cookie["domain"].lstrip(".") in COOKIE_DOMAINS:
@@ -70,10 +109,10 @@ def session() -> requests.Session:
     return client
 
 
-def get(client: requests.Session, url: str, *, stream: bool = False) -> requests.Response:
+def get(client: requests.Session, url: str, *, stream: bool = False, allow_refresh: bool = True) -> requests.Response:
     for _ in range(8):
         if not trusted(url):
-            raise RuntimeError("LMS�� ������ ���� �ٿ�ε� �ּҸ� ��ȯ�߽��ϴ�.")
+            raise RuntimeError("LMS가 허용되지 않은 다운로드 주소를 반환했습니다.")
         parsed = urlparse(url)
         headers = {"Authorization": "Bearer " + client.lms_token} if parsed.hostname == "canvas.ssu.ac.kr" and parsed.path.startswith("/learningx/api/") else {}
         response = client.get(url, headers=headers, timeout=30, allow_redirects=False, stream=stream)
@@ -84,20 +123,27 @@ def get(client: requests.Session, url: str, *, stream: bool = False) -> requests
             continue
         if response.status_code in (401, 403):
             response.close()
-            raise RuntimeError("LMS ������ �źεǾ����ϴ�. start_login�� ȣ���ϼ���.")
+            if allow_refresh and try_auto_refresh():
+                new_client = session(allow_refresh=False)
+                client.cookies.update(new_client.cookies)
+                client.lms_token = new_client.lms_token
+                return get(client, url, stream=stream, allow_refresh=False)
+            raise RuntimeError("LMS 세션이 만료되었습니다. start_login을 호출하세요.")
         response.raise_for_status()
         if "text/html" in response.headers.get("Content-Type", "").lower():
             response.close()
-            raise RuntimeError("LMS�� ���� ��� �α���/���� �������� ��ȯ�߽��ϴ�.")
+            raise RuntimeError("LMS가 파일 대신 로그인/오류 페이지를 반환했습니다.")
+        if response.cookies:
+            _sync_response_cookies(response.cookies)
         return response
-    raise RuntimeError("LMS �����̷�Ʈ�� �ʹ� �����ϴ�.")
+    raise RuntimeError("LMS 리다이렉트가 너무 많습니다.")
 
 
 def modules(client: requests.Session, course_id: int) -> list[dict]:
     url = f"https://canvas.ssu.ac.kr/learningx/api/v1/courses/{course_id}/modules?include_detail=true"
     modules = get(client, url).json()
     if not isinstance(modules, list) or not all(isinstance(module, dict) for module in modules):
-        raise RuntimeError("�б� �ڷ� API ������ �ùٸ��� �ʽ��ϴ�.")
+        raise RuntimeError("학교 자료 API 응답이 올바르지 않습니다.")
     return modules
 
 
@@ -191,7 +237,7 @@ def start_login(method: str = "auto") -> dict:
     if method == "learningx" or (method == "auto" and sys.platform == "darwin" and app.exists()):
         return {"status": "learningx_link_required", "app_path": str(app) if sys.platform == "darwin" else None,
                 "next_tool": "restore_learningx_session",
-                "message": "LearningX���� ���� ������ �����н��� ���� �� sessionless_launch ��ũ�� restore_learningx_session�� �����ϼ���. �� �α��� ȭ���̸� ����ڿ��� â�� �����ּ���. ��ũ�� ��ū�� �亯�� ������� ������. �� ������ �����ϸ� start_login(method='browser')�� ����ϼ���."}
+                "message": "LearningX에서 수강 강좌의 주차학습을 열고 sessionless_launch 링크를 restore_learningx_session에 전달하세요. 웹 로그인 화면이면 사용자에게 창을 열어주세요. 링크와 토큰은 답변에 남기지 마세요. 앱 조작이 실패하면 start_login(method='browser')를 사용하세요."}
     APP_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     if LOGIN_PID.exists():
         try:
@@ -199,7 +245,7 @@ def start_login(method: str = "auto") -> dict:
                 raise ProcessLookupError()
             status = login_status()['status']
             return {'status': status if status != 'not_started' else 'starting',
-                    'message': '�÷����� ���� ������ �����Դϴ�. �ٸ� �������� �α����� �������� �ʽ��ϴ�.'}
+                    'message': '로그인 창이 이미 열려 있습니다. 다른 브라우저 창의 로그인은 공유되지 않습니다.'}
         except (OSError, ValueError):
             LOGIN_PID.unlink(missing_ok=True)
     LOGIN_STATUS.unlink(missing_ok=True)
@@ -211,17 +257,16 @@ def start_login(method: str = "auto") -> dict:
     while time.monotonic() < deadline:
         status = login_status()['status']
         if status in {'waiting_for_login', 'authenticated'}:
-            return {'status': status, 'message': '�÷������� �� ���� ������ â���� �α����ϼ���. �ٸ� Chrome â�� �α����� �������� �ʽ��ϴ�.'}
+            return {'status': status, 'message': '브라우저에서 웹 로그인 창으로 로그인하세요. 다른 Chrome 창의 로그인은 공유되지 않습니다.'}
         if process.poll() is not None:
             LOGIN_PID.unlink(missing_ok=True)
             return {'status': 'login_start_failed', 'reason': status}
-        time.sleep(0.1)
     process.terminate()
     process.wait(timeout=5)
     LOGIN_PID.unlink(missing_ok=True)
     login_status('startup_timeout')
     return {'status': 'login_start_failed', 'reason': 'startup_timeout',
-            'message': '������ �ڵ�ȭ�� ���۵��� �ʾҽ��ϴ�. �Ϲ� PowerShell���� ���� ȯ���� Ȯ���ϼ���.'}
+            'message': '브라우저 자동화가 시작되지 않았습니다. 일반 실행 환경을 확인하세요.'}
 
 
 @mcp.tool()
@@ -231,25 +276,74 @@ def restore_learningx_session(launch_url: str) -> dict:
     return recover(launch_url)
 
 
+_keep_alive_thread = None
+_keep_alive_lock = threading.Lock()
+
+
+def ensure_keep_alive_thread():
+    """Start background session keep-alive thread if not already running."""
+    global _keep_alive_thread
+    with _keep_alive_lock:
+        if _keep_alive_thread is None or not _keep_alive_thread.is_alive():
+            try:
+                from keep_alive import run_daemon
+                _keep_alive_thread = threading.Thread(
+                    target=run_daemon, kwargs={"interval_sec": 600}, daemon=True, name="LMSKeepAlive"
+                )
+                _keep_alive_thread.start()
+            except Exception:
+                pass
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False))
+def keep_alive_session() -> dict:
+    """Send an authenticated ping to Soongsil LMS to keep the session alive and prevent expiration."""
+    from keep_alive import keep_alive_once
+    ensure_keep_alive_thread()
+    return keep_alive_once()
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False))
+def refresh_session(force: bool = False) -> dict:
+    """Silently refresh LMS session in background using saved Chrome profile without user interaction."""
+    from keep_alive import auto_refresh_session, ping_session
+    ensure_keep_alive_thread()
+    if not force and ping_session():
+        return {"refreshed": False, "message": "현재 세션이 아직 유효합니다."}
+    success = auto_refresh_session()
+    return {"refreshed": success, "message": "세션 자동 갱신 완료" if success else "세션 자동 갱신 실패. 수동 로그인이 필요합니다 (start_login 호출)."}
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+def keep_alive_status_check() -> dict:
+    """Check LMS session keep-alive status and last ping timestamp."""
+    from runtime import keep_alive_status
+    ensure_keep_alive_thread()
+    return keep_alive_status()
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def auth_status() -> dict:
     """Check whether a usable LMS browser session was captured locally."""
+    ensure_keep_alive_thread()
     try:
         list_courses()
-        return {"authenticated": True, "verified_live": True, "server_version": "0.3.3"}
+        from runtime import keep_alive_status
+        return {"authenticated": True, "verified_live": True, "server_version": "0.3.4",
+                "keep_alive": keep_alive_status()}
     except requests.HTTPError as error:
         status = error.response.status_code if error.response is not None else None
         return {"authenticated": None, "verified_live": False, "http_status": status,
                 "reason": "school_api_error", "recovery_tool": "start_login",
-                "message": "�б� API �����Դϴ�. HTTP 400������ ��ū ���Ḧ �������� ���� ��õ� �� ���� ������ Ȯ���ϼ���."}
+                "message": "학교 API 오류입니다. HTTP 400이어도 토큰 만료를 단정하지 않고 재시도 전 세션 상태를 확인하세요."}
     except requests.RequestException:
         return {"authenticated": None, "verified_live": False,
-                "message": "�б� API ��û�� �����߽��ϴ�. ��Ʈ��ũ�� �α��� ���¸� Ȯ���ϼ���.",
+                "message": "학교 API 요청에 실패했습니다. 네트워크와 로그인 상태를 확인하세요.",
                 "recovery_tool": "start_login"}
     except (OSError, ValueError, KeyError, RuntimeError):
         return {"authenticated": False, "verified_live": False,
                 "login_worker": login_status()["status"],
-                "message": "start_login���� LearningX ���� ������ ���� �õ��ϼ���.",
+                "message": "start_login으로 LearningX 앱 또는 브라우저 인증을 시도하세요.",
                 "recovery_tool": "start_login"}
 
 
@@ -318,7 +412,7 @@ def stage_material(course_id: int, content_id: str, week: str = "") -> dict:
     selected = next((item for item in materials(client, course_id)
                      if item["content_id"] == content_id and (not week or item["week"] == week)), None)
     if selected is None:
-        raise ValueError("�� ������ ������ �ڷ� ID�� �ƴմϴ�.")
+        raise ValueError("이 강좌에 없는 자료 ID입니다.")
     if selected.get("source") == "canvas":
         file_id = content_id.removeprefix("canvas-file-")
         with get(client, f"https://canvas.ssu.ac.kr/api/v1/courses/{course_id}/files/{file_id}") as response:
@@ -335,13 +429,13 @@ def stage_material(course_id: int, content_id: str, week: str = "") -> dict:
         info_url = "https://commons.ssu.ac.kr/viewer/ssplayer/uniplayer_support/content.php?content_id=" + quote(content_id)
         xml = get(client, info_url).text
         if "<!DOCTYPE" in xml.upper() or "<!ENTITY" in xml.upper():
-            raise RuntimeError("LMS �ڷ� ���� XML�� �������� �ʽ��ϴ�.")
+            raise RuntimeError("LMS 자료 정보 XML이 올바르지 않습니다.")
         uri = ET.fromstring(xml).findtext(".//content_download_uri")
         if not uri:
-            raise RuntimeError("LMS�� �ٿ�ε� �ּҸ� �������� �ʾҽ��ϴ�.")
+            raise RuntimeError("LMS가 다운로드 주소를 제공하지 않았습니다.")
         file_url = urljoin("https://commons.ssu.ac.kr/", uri.replace("&amp;", "&"))
     if not trusted(file_url):
-        raise RuntimeError("LMS�� ������ ���� �ٿ�ε� �ּҸ� ��ȯ�߽��ϴ�.")
+        raise RuntimeError("LMS가 허용되지 않은 다운로드 주소를 반환했습니다.")
     STAGING.mkdir(mode=0o700, parents=True, exist_ok=True)
     safe_name = re.sub(r"[\\/:*?\"<>|\x00-\x1f]", "_", unicodedata.normalize("NFC", selected["filename"])).strip(" .")[:150] or "file"
     descriptor, path = tempfile.mkstemp(prefix="lms-", suffix=Path(safe_name).suffix, dir=STAGING)
@@ -350,20 +444,20 @@ def stage_material(course_id: int, content_id: str, week: str = "") -> dict:
     try:
         with os.fdopen(descriptor, "wb") as output, get(client, file_url, stream=True) as response:
             if int(response.headers.get("Content-Length", "0")) > MAX_BYTES:
-                raise RuntimeError("������ 100MB ������ �ʰ��մϴ�.")
+                raise RuntimeError("파일이 100MB 한도를 초과합니다.")
             for chunk in response.iter_content(1024 * 1024):
                 size += len(chunk)
                 if size > MAX_BYTES:
-                    raise RuntimeError("������ 100MB ������ �ʰ��մϴ�.")
+                    raise RuntimeError("파일이 100MB 한도를 초과합니다.")
                 output.write(chunk)
         if size == 0:
-            raise RuntimeError("�� ������ �޾ҽ��ϴ�.")
+            raise RuntimeError("빈 파일을 받았습니다.")
         if temporary.suffix.lower() == ".pdf":
             with temporary.open("rb") as pdf:
                 if pdf.read(5) != b"%PDF-":
-                    raise RuntimeError("LMS�� ��ȿ�� PDF�� ��ȯ���� �ʾҽ��ϴ�.")
+                    raise RuntimeError("LMS가 유효한 PDF를 반환하지 않았습니다.")
         elif temporary.suffix.lower() in {".zip", ".pptx"} and not zipfile.is_zipfile(temporary):
-            raise RuntimeError("LMS�� ��ȿ�� ZIP/PPTX�� ��ȯ���� �ʾҽ��ϴ�.")
+            raise RuntimeError("LMS가 유효한 ZIP/PPTX를 반환하지 않았습니다.")
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
@@ -399,7 +493,7 @@ def lecture_transcript(content_id: str, start_if_missing: bool = True) -> dict:
             if not process_running(int(pid_file.read_text(encoding="utf-8"))):
                 raise ProcessLookupError()
         except (OSError, ValueError):
-            return {"status":"failed", "error":"���� �۾��� �ߴܵǾ����ϴ�. retry_lecture_transcript�� ȣ���ϼ���."}
+            return {"status":"failed", "error":"전사 작업이 중단되었습니다. retry_lecture_transcript를 호출하세요."}
         return result
     if not start_if_missing:
         return {"status":"not_started"}
@@ -410,7 +504,7 @@ def lecture_transcript(content_id: str, start_if_missing: bool = True) -> dict:
                                    **WORKER_OPTIONS)
         path.with_suffix(".pid").write_text(str(process.pid))
     except OSError:
-        save(path, {"status": "failed", "error": "���� ���μ����� �������� ���߽��ϴ�. retry_lecture_transcript�� ȣ���ϼ���."})
+        save(path, {"status": "failed", "error": "전사 프로세스를 시작하지 못했습니다. retry_lecture_transcript를 호출하세요."})
         return json.loads(path.read_text(encoding="utf-8"))
     return {"status":"processing", "content_id":content_id}
 
