@@ -39,8 +39,8 @@ async def verify():
             print('AUTH', json.dumps(auth, ensure_ascii=True), flush=True)
             if auth.get('authenticated') is not True or auth.get('verified_live') is not True:
                 raise RuntimeError('Live school authentication did not pass.')
-            if auth.get('server_version') != '0.3.4':
-                raise RuntimeError('Expected server version 0.3.4.')
+            if auth.get('server_version') != '0.3.5':
+                raise RuntimeError('Expected server version 0.3.5.')
             courses = await call('list_courses', {})
             if not isinstance(courses, list):
                 raise RuntimeError('Unexpected course response.')

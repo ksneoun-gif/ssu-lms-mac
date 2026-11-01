@@ -329,7 +329,7 @@ def auth_status() -> dict:
     try:
         list_courses()
         from runtime import keep_alive_status
-        return {"authenticated": True, "verified_live": True, "server_version": "0.3.4",
+        return {"authenticated": True, "verified_live": True, "server_version": "0.3.5",
                 "keep_alive": keep_alive_status()}
     except requests.HTTPError as error:
         status = error.response.status_code if error.response is not None else None
@@ -475,6 +475,23 @@ def delete_staged_material(staging_id: str) -> dict:
     return {"deleted": True}
 
 
+def get_worker_python() -> str:
+    """Resolve Python executable with faster_whisper installed."""
+    import importlib.util
+    if importlib.util.find_spec("faster_whisper") is not None:
+        return sys.executable
+    home = Path.home()
+    candidates = [
+        home / "Downloads/ssu-lms-download-mcp/.venv/bin/python",
+        Path(__file__).resolve().parent / ".venv/bin/python",
+        Path(__file__).resolve().parent.parent.parent / ".venv/bin/python",
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            return str(cand)
+    return sys.executable
+
+
 @mcp.tool()
 def lecture_transcript(content_id: str, start_if_missing: bool = True) -> dict:
     """Start local video transcription or read its status and timestamped transcript. No attendance writes."""
@@ -499,7 +516,7 @@ def lecture_transcript(content_id: str, start_if_missing: bool = True) -> dict:
         return {"status":"not_started"}
     save(path, {"status":"processing", "phase":"starting"})
     try:
-        process = subprocess.Popen([sys.executable, str(Path(__file__).with_name("lecture.py")), content_id],
+        process = subprocess.Popen([get_worker_python(), str(Path(__file__).with_name("lecture.py")), content_id],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                    **WORKER_OPTIONS)
         path.with_suffix(".pid").write_text(str(process.pid))

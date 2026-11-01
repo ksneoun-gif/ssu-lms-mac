@@ -21,11 +21,11 @@ candidates.push(win ? 'python.exe' : 'python3');
 let selected;
 for (const candidate of candidates.filter(Boolean)) {
   if (/[/\\]WindowsApps[/\\]/i.test(candidate)) continue;
-  const probe = spawnSync(candidate, ['-I', '-c', 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,14) else 1)'], {windowsHide:true, timeout:10000, stdio:'ignore'});
+  const probe = spawnSync(candidate, ['-I', '-c', 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,15) else 1)'], {windowsHide:true, timeout:10000, stdio:'ignore'});
   if (!probe.error && probe.status === 0) {selected=candidate;break;}
 }
 if (!selected) {
-  console.error('Python 3.10-3.13 required. Install Python 3.12 or set SSU_LMS_PYTHON.');
+  console.error('Python 3.10-3.15 required. Install Python 3.12 or set SSU_LMS_PYTHON.');
   process.exit(1);
 }
 const child = spawn(selected, ['-u', path.join(__dirname, 'bootstrap.py'), ...process.argv.slice(2)], {windowsHide:true, stdio:['pipe','pipe','inherit']});
