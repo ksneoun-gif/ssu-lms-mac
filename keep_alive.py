@@ -34,6 +34,14 @@ def ping_session(client: requests.Session | None = None) -> bool:
     try:
         headers = {"Authorization": "Bearer " + client.lms_token}
         response = client.get(url, headers=headers, timeout=20, allow_redirects=False)
+        if response.status_code in (400, 401, 403):
+            try:
+                from learningx import refresh_lti_token
+                if refresh_lti_token(client):
+                    headers = {"Authorization": "Bearer " + client.lms_token}
+                    response = client.get(url, headers=headers, timeout=20, allow_redirects=False)
+            except Exception:
+                pass
         if response.status_code == 200 and isinstance(response.json(), list):
             # Capture any refreshed cookies
             if response.cookies:
@@ -61,7 +69,15 @@ def ping_session(client: requests.Session | None = None) -> bool:
 
 
 def auto_refresh_session() -> bool:
-    """Attempt non-interactive headless browser login using existing Chrome profile."""
+    """Attempt silent LTI token refresh or non-interactive headless browser login."""
+    try:
+        from learningx import refresh_lti_token
+        if refresh_lti_token():
+            keep_alive_status("refreshed", last_refresh=time.time())
+            return True
+    except Exception:
+        pass
+
     script_path = Path(__file__).resolve().with_name("login.py")
     try:
         proc = subprocess.run(

@@ -53,7 +53,13 @@ def save_session(cookies: list[dict], source: str = "browser") -> None:
 
 
 def try_auto_refresh() -> bool:
-    """Attempt background headless re-authentication."""
+    """Silently refresh session if possible without user intervention."""
+    try:
+        from learningx import refresh_lti_token
+        if refresh_lti_token():
+            return True
+    except Exception:
+        pass
     try:
         from keep_alive import auto_refresh_session
         return auto_refresh_session()
@@ -121,7 +127,7 @@ def get(client: requests.Session, url: str, *, stream: bool = False, allow_refre
             response.close()
             url = next_url
             continue
-        if response.status_code in (401, 403):
+        if response.status_code in (400, 401, 403):
             response.close()
             if allow_refresh and try_auto_refresh():
                 new_client = session(allow_refresh=False)

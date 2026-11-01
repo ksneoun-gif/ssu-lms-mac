@@ -111,6 +111,33 @@ class KeepAliveTests(unittest.TestCase):
             res = server.get(client, "https://canvas.ssu.ac.kr/learningx/api/v1/courses", allow_refresh=True)
             self.assertEqual(res.status_code, 200)
 
+    def test_get_retries_with_refreshed_session_on_400(self):
+        client = MagicMock()
+        client.lms_token = "stale"
+        client.cookies = MagicMock()
+
+        resp_400 = MagicMock()
+        resp_400.status_code = 400
+        resp_400.is_redirect = False
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.is_redirect = False
+        resp_200.headers = {"Content-Type": "application/json"}
+        resp_200.cookies = []
+
+        client.get.side_effect = [resp_400, resp_200]
+
+        with patch.object(server, "trusted", return_value=True), \
+                patch.object(server, "try_auto_refresh", return_value=True), \
+                patch.object(server, "session") as mock_session:
+            new_s = MagicMock()
+            new_s.lms_token = "fresh"
+            mock_session.return_value = new_s
+
+            res = server.get(client, "https://canvas.ssu.ac.kr/learningx/api/v1/courses", allow_refresh=True)
+            self.assertEqual(res.status_code, 200)
+
     def test_tools_registered(self):
         tool_names = [tool.name for tool in server.mcp._tool_manager.list_tools()]
         self.assertIn("keep_alive_session", tool_names)

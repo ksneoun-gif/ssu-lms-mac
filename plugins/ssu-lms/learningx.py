@@ -118,3 +118,49 @@ def recover(launch_url: str) -> dict:
         return {"authenticated": False, "verified_live": False, "source": "learningx",
                 "message": "LearningX 인증 복구 실패. 앱에서 새 주차학습 링크로 재시도하세요. 기존 세션은 유지됩니다."}
 
+
+def refresh_lti_token(client: requests.Session | None = None) -> bool:
+    """Silently renew xn_api_token using the active Canvas session via LTI tool launch."""
+    from server import COOKIE_DOMAINS, save_session, session
+
+    if client is None:
+        try:
+            client = session(allow_refresh=False)
+        except Exception:
+            return False
+
+    try:
+        check = client.get(f"{CANVAS}/api/v1/users/self/courses", params={"enrollment_state": "active"}, timeout=15)
+        if check.status_code != 200:
+            return False
+        courses = json.loads(check.text.removeprefix("while(1);"))
+        if not isinstance(courses, list) or not courses:
+            return False
+        course_id = courses[0].get("id")
+        if not course_id:
+            return False
+
+        with request(client, "GET", f"{CANVAS}/courses/{course_id}/external_tools/71") as page:
+            if page.status_code != 200:
+                return False
+            form = ToolForm()
+            form.feed(page.text)
+        if form.action != CANVAS + "/learningx/lti/modulebuilder" or not form.fields.get("oauth_signature"):
+            return False
+        with request(client, "POST", form.action, form.fields) as response:
+            if response.status_code != 200:
+                return False
+        token = next((c.value for c in client.cookies
+                      if c.name == "xn_api_token" and c.domain.lstrip(".") == "canvas.ssu.ac.kr"), None)
+        if not token:
+            return False
+        client.lms_token = token
+        cookies = [{"name": c.name, "value": c.value, "domain": c.domain, "path": c.path,
+                    "expires": c.expires if c.expires is not None else -1, "secure": c.secure}
+                   for c in client.cookies if c.domain.lstrip(".") in COOKIE_DOMAINS]
+        save_session(cookies, "lti_refresh")
+        return True
+    except (requests.RequestException, ValueError, KeyError, RuntimeError, OSError):
+        return False
+
+

@@ -124,6 +124,22 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.start_login("unknown")
 
+    def test_refresh_lti_token_success(self):
+        client = requests.Session()
+        client.cookies.set("xn_api_token", "new_token", domain="canvas.ssu.ac.kr")
+        courses_resp = response(status=200, text='while(1);[{"id": 48795, "name": "Course"}]')
+        tool_resp = response(status=200, text=FORM)
+        post_resp = response(status=200)
+
+        with patch("server.save_session") as mock_save, \
+             patch.object(client, "get", return_value=courses_resp), \
+             patch("learningx.request", side_effect=[tool_resp, post_resp]):
+            result = learningx.refresh_lti_token(client)
+            self.assertTrue(result)
+            self.assertEqual(client.lms_token, "new_token")
+            mock_save.assert_called_once()
+
+
 
 if __name__ == "__main__":
     unittest.main()

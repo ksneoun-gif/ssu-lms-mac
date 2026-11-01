@@ -12,6 +12,7 @@ const candidates = [process.env.SSU_LMS_PYTHON,
   executable(path.join(__dirname, '.runtime')),
   executable(path.join(__dirname, '../../.runtime')),
   executable(path.join(home, 'Downloads/ssu-lms-download-mcp/.venv')),
+  executable(path.join(home, 'Library/Application Support/ssu-lms-download-mcp/venv')),
   path.join(home, '.cache/codex-runtimes/codex-primary-runtime/dependencies/python', win ? 'python.exe' : 'bin/python3')];
 if (win && process.env.LOCALAPPDATA) {
   const root = path.join(process.env.LOCALAPPDATA, 'Programs/Python');
