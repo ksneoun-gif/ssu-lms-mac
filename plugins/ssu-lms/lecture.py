@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+import time
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -43,6 +44,7 @@ def save(path, data):
     temporary = Path(name)
     try:
         with os.fdopen(descriptor, 'w', encoding='utf-8') as output:
+            data = dict(data, updated_at=time.time())
             json.dump(data, output, ensure_ascii=False)
         temporary.replace(path)
     finally:
@@ -68,10 +70,12 @@ def transcribe(content_id):
         url = uri.replace('[MEDIA_FILE]', filename)
         if not trusted_media(url):
             raise ValueError("허용된 영상 주소가 아닙니다.")
-        save(path, {'status':'processing', 'phase':'temporary_media', 'duration_seconds':duration})
+        title = root.findtext('.//content_metadata/title') or ''
+        save(path, {'status':'processing', 'phase':'temporary_media', 'title':title, 'duration_seconds':duration})
         fd, name = tempfile.mkstemp(suffix='.mp4', prefix='ssu-speech-')
         media = Path(name)
         size = 0
+        last_dl = time.monotonic()
         with os.fdopen(fd, 'wb') as output, requests.get(url, headers={'Referer': 'https://commons.ssu.ac.kr/', 'User-Agent': 'Mozilla/5.0'}, stream=True, timeout=60, allow_redirects=False) as response:
             response.raise_for_status()
             if response.is_redirect:
@@ -81,19 +85,28 @@ def transcribe(content_id):
                 if size > 1024**3:
                     raise ValueError("영상이 임시 처리 한도 1GB를 초과합니다.")
                 output.write(chunk)
-        save(path, {'status':'processing', 'phase':'speech_recognition', 'duration_seconds':duration})
+                if time.monotonic() - last_dl >= 5:
+                    save(path, {'status':'processing', 'phase':'temporary_media', 'title':title,
+                                'downloaded_bytes':size, 'duration_seconds':duration})
+                    last_dl = time.monotonic()
+        save(path, {'status':'processing', 'phase':'speech_recognition', 'title':title,
+                    'processed_seconds':0.0, 'duration_seconds':duration, 'progress_percent':0.0})
         from faster_whisper import WhisperModel
         model = WhisperModel('small', device='cpu', compute_type='int8', cpu_threads=4)
-        title = root.findtext('.//content_metadata/title') or ''
         segments, info = model.transcribe(str(media), language='ko', vad_filter=True, beam_size=5,
                                          initial_prompt=title[:200] or None)
         rows = []
+        last_progress = time.monotonic()
         for segment in segments:
             rows.append({'start':round(segment.start,2), 'end':round(segment.end,2), 'text':segment.text.strip(),
                          'avg_logprob':round(segment.avg_logprob,4),
                          'no_speech_prob':round(segment.no_speech_prob,4)})
-            if len(rows) % 20 == 0:
-                save(path, {'status':'processing','phase':'speech_recognition','processed_seconds':segment.end,'duration_seconds':duration})
+            if len(rows) == 1 or time.monotonic() - last_progress >= 5:
+                pct = min(99, round(100 * segment.end / duration, 1)) if duration > 0 else 0
+                save(path, {'status':'processing','phase':'speech_recognition','title':title,
+                            'processed_seconds':segment.end,'duration_seconds':duration,
+                            'progress_percent':pct,'segment_count':len(rows)})
+                last_progress = time.monotonic()
         if not rows:
             raise ValueError("인식된 음성이 없습니다.")
         save(path, {'status':'complete','source':'local_speech_recognition','title':title,

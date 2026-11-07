@@ -40,7 +40,7 @@ def test_guarded_canvas_lists_and_file_metadata():
 
 def test_read_only_annotations_are_exported():
     tools=server.mcp._tool_manager.list_tools()
-    readonly={'auth_status','list_courses','list_materials','list_weekly_content','diagnose_materials'}
+    readonly={'auth_status','list_courses','list_materials','list_weekly_content','diagnose_materials','keep_alive_status_check','get_assignment'}
     for tool in tools:
         if tool.name in readonly:
             assert tool.annotations.readOnlyHint is True

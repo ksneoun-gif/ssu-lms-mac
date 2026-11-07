@@ -574,6 +574,10 @@ def lecture_transcript(content_id: str, start_if_missing: bool = True) -> dict:
                 raise ProcessLookupError()
         except (OSError, ValueError):
             return {"status":"failed", "error":"전사 작업이 중단되었습니다. retry_lecture_transcript를 호출하세요."}
+        duration = result.get("duration_seconds", 0)
+        if duration > 0 and "processed_seconds" in result:
+            result.setdefault("progress_percent", min(99, round(100 * result.get("processed_seconds", 0) / duration, 1)))
+        result.setdefault("next_action", "wait_lecture_transcript")
         return result
     if not start_if_missing:
         return {"status":"not_started"}
@@ -586,7 +590,87 @@ def lecture_transcript(content_id: str, start_if_missing: bool = True) -> dict:
     except OSError:
         save(path, {"status": "failed", "error": "전사 프로세스를 시작하지 못했습니다. retry_lecture_transcript를 호출하세요."})
         return json.loads(path.read_text(encoding="utf-8"))
-    return {"status":"processing", "content_id":content_id}
+    return {"status":"processing", "content_id":content_id, "phase":"starting", "next_action":"wait_lecture_transcript"}
+
+
+@mcp.tool()
+def wait_lecture_transcript(content_id: str, timeout_seconds: int = 45) -> dict:
+    """Wait up to 45 seconds for transcription. On processing, report progress and call again; on complete, stage TXT and upload to Drive before ending the task."""
+    if not 0 <= timeout_seconds <= 45:
+        raise ValueError("timeout_seconds must be between 0 and 45")
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        result = lecture_transcript(content_id)
+        if result.get("status") != "processing":
+            if result.get("status") == "complete":
+                return {"status": "complete", "content_id": content_id,
+                        "title": result.get("title", ""),
+                        "duration_seconds": result.get("duration_seconds"),
+                        "segment_count": len(result.get("segments", [])),
+                        "next_action": "stage_lecture_transcript_then_upload_and_verify_drive",
+                        "needs_review": result.get("needs_review", True)}
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            result = dict(result, content_id=content_id, next_action="report_progress_then_wait_again")
+            duration = result.get("duration_seconds", 0)
+            if duration > 0:
+                result["progress_percent"] = min(99, round(100 * result.get("processed_seconds", 0) / duration, 1))
+            return result
+        time.sleep(min(2, remaining))
+
+
+@mcp.tool()
+def stage_lecture_transcript(content_id: str, course_name: str, week: int, lecture_name: str, save_dir: str = "") -> dict:
+    """Prepare a COMPLETE transcript as UTF-8 TXT for Google Drive or local save. Upload, verify name/parent/size, then delete_staged_material. Never reports Drive success."""
+    if not 1 <= week <= 53:
+        raise ValueError("Invalid week")
+    def component(value):
+        value = unicodedata.normalize("NFC", value).strip()
+        if not value or len(value) > 160 or re.search(r'[\\/:*?"<>|\x00-\x1f]', value) or value in {".", ".."} or ".." in value:
+            raise ValueError("Invalid filename component")
+        return value
+    filename = f"{component(course_name)}_{week:02d}주차_{component(lecture_name)}_전사.txt"
+    result = lecture_transcript(content_id, False)
+    if result.get("status") != "complete" or not result.get("segments"):
+        return {"status": "not_ready", "transcription_status": result.get("status"),
+                "next_action": "wait_lecture_transcript"}
+    def timestamp(seconds):
+        seconds = max(0, int(seconds))
+        return f"{seconds // 3600:02d}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
+    title = result.get("title") or component(lecture_name)
+    duration = result.get("duration_seconds")
+    lines = [filename, f"제목: {title}"]
+    if isinstance(duration, (int, float)) and duration > 0:
+        lines.append(f"총 길이: {timestamp(duration)}")
+    lines.extend([
+        "출처: 숭실대 LMS 강의 영상 자동 음성 인식",
+        f"모델: {result.get('model', 'small')} (검토 상태: {result.get('review_status', 'unreviewed')})",
+        "주의: 자동 전사 결과이며 전문용어·수식은 강의자료와 대조 검토가 필요합니다.",
+        "",
+    ])
+    for segment in result["segments"]:
+        lines.append(f'[{timestamp(segment["start"])}–{timestamp(segment["end"])}] {segment["text"]}')
+    body = ("\n".join(lines) + "\n").encode("utf-8")
+    STAGING.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor, name = tempfile.mkstemp(prefix="lms-", suffix=".txt", dir=STAGING)
+    path = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(body)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    response = {"status": "staged", "staging_id": path.name, "local_path": str(path),
+                "filename": filename, "size_bytes": len(body), "mime_type": "text/plain",
+                "drive_saved": False, "next_action": "upload_to_existing_week_folder_and_verify_metadata"}
+    if save_dir:
+        target_dir = Path(save_dir).expanduser().resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        saved_file = target_dir / filename
+        saved_file.write_bytes(body)
+        response["saved_path"] = str(saved_file)
+    return response
 
 
 @mcp.tool()
