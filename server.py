@@ -382,17 +382,66 @@ def list_weekly_content(course_id: int) -> list[dict]:
         for row in module.get("module_items", []):
             data = row.get("content_data") or {}
             item = data.get("item_content_data") or {}
+            kind = (data.get("content_type") or item.get("content_type")
+                    or row.get("content_type") or row.get("type") or "")
+            module_item_id = row.get("module_item_id") or row.get("id")
+            if kind in ("assignment", "quiz", "discussion_topic") and row.get("content_id"):
+                # Canvas assignments carry no Commons file; expose the Canvas ID instead of "missing metadata".
+                items.append({"title": row.get("title") or "", "type": kind, "content_id": None,
+                              "filename": None, "assignment_id": row.get("content_id"),
+                              "unlock_at": data.get("unlock_at"), "due_at": data.get("due_at"),
+                              "points_possible": data.get("points_possible"),
+                              "completed": row.get("completed"),
+                              "available": True, "availability_reason": "canvas_" + kind,
+                              "next_tool": "get_assignment" if kind == "assignment" else None,
+                              "module_item_id": module_item_id})
+                continue
             content_id = item.get("content_id")
             items.append({"title": row.get("title") or item.get("title") or data.get("title", ""),
-                          "type": row.get("type") or data.get("content_type") or item.get("content_type", ""),
+                          "type": kind,
                           "content_id": str(content_id) if content_id and content_id != "not_open" else None,
                           "filename": item.get("file_name"),
                           "available": False if content_id == "not_open" else (True if content_id else None),
                           "availability_reason": "not_open" if content_id == "not_open" else
                               ("identified" if content_id else "missing_content_metadata"),
-                          "module_item_id": row.get("id")})
+                          "transcribable": bool(content_id and content_id != "not_open"
+                                                and kind in ("movie", "video", "readystream", "mp4", "everlec")),
+                          "module_item_id": module_item_id})
         result.append({"week": module.get("title", ""), "items": items})
     return result
+
+
+def _html_text(html: str) -> str:
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</div>", "\n", html or "")
+    text = re.sub(r"<[^>]+>", "", text)
+    import html as html_lib
+    return re.sub(r"\n\s*\n+", "\n", html_lib.unescape(text)).strip()
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+def get_assignment(course_id: int, assignment_id: int) -> dict:
+    """Read a Canvas assignment's instructions, dates and attachment names (read-only; never submits)."""
+    if course_id <= 0 or assignment_id <= 0:
+        raise ValueError("course_id and assignment_id must be positive")
+    url = f"https://canvas.ssu.ac.kr/api/v1/courses/{course_id}/assignments/{assignment_id}"
+    for attempt in range(2):
+        client = session()
+        response = client.get(url, timeout=30, allow_redirects=False)
+        if response.status_code in (400, 401, 403) and attempt == 0 and try_auto_refresh():
+            continue
+        break
+    if response.status_code != 200:
+        raise RuntimeError(f"과제 정보를 불러오지 못했습니다 (HTTP {response.status_code}).")
+    data = canvas_json(response)
+    description = data.get("description") or ""
+    attachments = re.findall(r'data-api-endpoint="[^"]*/files/(\d+)"[^>]*>([^<]*)<', description)
+    return {"assignment_id": data.get("id"), "name": data.get("name"),
+            "instructions": _html_text(description)[:20000],
+            "unlock_at": data.get("unlock_at"), "due_at": data.get("due_at"), "lock_at": data.get("lock_at"),
+            "points_possible": data.get("points_possible"), "submission_types": data.get("submission_types"),
+            "locked_for_user": data.get("locked_for_user"),
+            "attachments": [{"file_id": fid, "name": name.strip()} for fid, name in attachments],
+            "html_url": data.get("html_url")}
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -503,6 +552,14 @@ def lecture_transcript(content_id: str, start_if_missing: bool = True) -> dict:
     """Start local video transcription or read its status and timestamped transcript. No attendance writes."""
     from lecture import job_path, save
     path = job_path(content_id)
+    if path.exists() and start_if_missing:
+        try:
+            stale = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stale = {}
+        # Jobs rejected by the older, narrower media whitelist are safe to restart automatically.
+        if stale.get("status") == "failed" and "허용된 영상 주소가 아닙니다" in str(stale.get("error", "")):
+            path.unlink(missing_ok=True)
     if path.exists():
         result = json.loads(path.read_text(encoding="utf-8"))
         if result.get("status") != "processing":

@@ -89,6 +89,12 @@ def test_media_new_paths_and_malformed_urls():
     from lecture import trusted_media
     assert trusted_media('https://ssuin-object.commonscdn.com/ssu-contents/contents29/ssu1000001/a.mp4')
     assert trusted_media('https://ssu-toast.commonscdn.com/contents15/ssu1000001/a.mp4')
+    # Older lectures live in other numbered buckets.
+    assert trusted_media('https://ssu-toast.commonscdn.com/contents20/ssu1000001/5d288e033a70c/contents/media_files/main_(c1f0).mp4')
+    assert trusted_media('https://ssu-toast.commonscdn.com/contents28/ssu1000001/5f6c45addb95/contents/media_files/main_(e8f6).mp4')
+    assert not trusted_media('https://ssu-toast.commonscdn.com/contentsX/ssu1000001/a.mp4')
+    assert not trusted_media('https://ssu-toast.commonscdn.com/contents1234/ssu1000001/a.mp4')
+    assert not trusted_media('https://ssu-toast.commonscdn.com/contents20/ssu1000002/a.mp4')
     for url in ('https://[bad', 'https://ssu-toast.commonscdn.com:bad/contents15/ssu1000001/a.mp4',
                 'https://ssu-toast.commonscdn.com/contents15/ssu1000001/../other/a.mp4',
                 'https://ssu-toast.commonscdn.com/contents15/ssu1000001/%2e%2e/a.mp4',

@@ -1,6 +1,6 @@
 {
   "name": "ssu-lms",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "숭실대 강의파일 Drive 저장, 영상 요약, 학습 마감 브리핑과 유세인트 시설 예약",
   "author": {
     "name": "ksneoun-gif"

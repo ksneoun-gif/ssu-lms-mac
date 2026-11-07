@@ -113,13 +113,19 @@ def run_daemon(interval_sec: int = 600, stop_event: threading.Event | None = Non
     KEEP_ALIVE_PID.write_text(str(os.getpid()), encoding="utf-8")
     keep_alive_status("running", interval_sec=interval_sec)
     try:
+        last_run = 0.0
         while stop_event is None or not stop_event.is_set():
-            keep_alive_once()
+            # Wall-clock scheduling: after the Mac wakes from sleep, ping immediately
+            # instead of finishing a stale sleep(), so the token is renewed before it is needed.
+            if time.time() - last_run >= interval_sec:
+                last_run = time.time()
+                keep_alive_once()
+            tick = min(30, interval_sec)
             if stop_event is not None:
-                if stop_event.wait(timeout=interval_sec):
+                if stop_event.wait(timeout=tick):
                     break
             else:
-                time.sleep(interval_sec)
+                time.sleep(tick)
     finally:
         KEEP_ALIVE_PID.unlink(missing_ok=True)
         keep_alive_status("stopped")

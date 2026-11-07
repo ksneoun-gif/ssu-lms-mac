@@ -12,18 +12,21 @@ import requests
 from runtime import APP_DIR
 ROOT = APP_DIR / 'transcripts'
 
+MEDIA_PATHS = {
+    # Commons spreads videos over numbered storage buckets (contents15, 20, 28, 29, 31, ...).
+    'ssuin-object.commonscdn.com': re.compile(r'/ssu-contents/(?:contents/|contents[0-9]{1,3}/ssu1000001/)'),
+    'ssu-toast.commonscdn.com': re.compile(r'/(?:ssu-contents/)?contents[0-9]{1,3}/ssu1000001/'),
+}
+
+
 def trusted_media(url):
-    prefixes = {'ssuin-object.commonscdn.com': ('/ssu-contents/contents/',
-                                               '/ssu-contents/contents31/ssu1000001/',
-                                               '/ssu-contents/contents29/ssu1000001/',
-                                               '/contents15/ssu1000001/'),
-                'ssu-toast.commonscdn.com': ('/contents31/ssu1000001/', '/contents15/ssu1000001/')}
     try:
         parsed = urlparse(url)
         path = unquote(parsed.path)
+        pattern = MEDIA_PATHS.get(parsed.hostname)
         return (parsed.scheme == 'https' and parsed.username is None and parsed.password is None
-                and parsed.port in (None, 443) and parsed.hostname in prefixes
-                and path.startswith(prefixes[parsed.hostname])
+                and parsed.port in (None, 443) and pattern is not None
+                and pattern.match(path) is not None
                 and not any(part in ('.', '..') for part in path.split('/'))
                 and not any(char in path for char in ('\\', '%', '\x00')))
     except ValueError:

@@ -138,6 +138,20 @@ class KeepAliveTests(unittest.TestCase):
             res = server.get(client, "https://canvas.ssu.ac.kr/learningx/api/v1/courses", allow_refresh=True)
             self.assertEqual(res.status_code, 200)
 
+    def test_weekly_content_exposes_assignments_and_readystream(self):
+        raw = [{"title": "9주차", "module_items": [
+            {"module_item_id": 1, "title": "개인과제1", "content_type": "assignment", "content_id": 745555,
+             "content_data": {"due_at": "2026-11-09T14:59:59Z", "points_possible": 10}},
+            {"module_item_id": 2, "title": "강의", "content_type": "attendance_item",
+             "content_data": {"content_type": "readystream", "item_content_data": {"content_id": "5d288e033a70c"}}}]}]
+        with patch.object(server, "modules", return_value=raw), patch.object(server, "session"):
+            items = server.list_weekly_content(1)[0]["items"]
+        self.assertEqual(items[0]["availability_reason"], "canvas_assignment")
+        self.assertEqual(items[0]["assignment_id"], 745555)
+        self.assertEqual(items[0]["module_item_id"], 1)
+        self.assertTrue(items[1]["transcribable"])
+        self.assertEqual(items[1]["type"], "readystream")
+
     def test_tools_registered(self):
         tool_names = [tool.name for tool in server.mcp._tool_manager.list_tools()]
         self.assertIn("keep_alive_session", tool_names)
